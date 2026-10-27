@@ -27,6 +27,13 @@ FPS = 60
 BIRD_X = 220
 BIRD_R = 14
 STEP = 16  # canyon wall segment width in px
+DRIFT_SPEED = 90  # px/s the bird moves toward out-of-range readings
+WARN_LOOKAHEAD = 100  # px ahead of the bird checked for crash warnings
+WARN_BORDER = 10  # thickness of the red warning border in px
+MEDIAN_WINDOW = 5  # sensor readings combined to reject stray echoes
+TARGET_SMOOTHING = 0.12  # seconds; higher = smoother but laggier bird
+DEADBAND_CM = 1.1  # hand movements smaller than this are treated as sensor noise
+COUNTDOWN = 5  # seconds before the canyon starts moving
 BEST_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "best.txt")
 
 LINE_RE = re.compile(r"Distance \(cm\):\s*(-?\d+)")
@@ -38,6 +45,7 @@ ROCK_EDGE = (120, 78, 82)
 SEED = (255, 226, 120)
 STORM = (52, 56, 74)
 TEXT = (245, 240, 230)
+WARN = (235, 60, 60)
 
 
 class SensorReader(threading.Thread):
@@ -47,7 +55,8 @@ class SensorReader(threading.Thread):
         super().__init__(daemon=True)
         self.port = port
         self.baud = baud
-        self.distance = None
+        self.distance = None  # median of recent readings, so single bad echoes are ignored
+        self.history = deque(maxlen=MEDIAN_WINDOW)
         self.last_update = 0.0
         self.status = "connecting..."
         self.stop_event = threading.Event()
@@ -61,7 +70,8 @@ class SensorReader(threading.Thread):
                         line = ser.readline().decode(errors="ignore")
                         match = LINE_RE.search(line)
                         if match:
-                            self.distance = int(match.group(1))
+                            self.history.append(int(match.group(1)))
+                            self.distance = sorted(self.history)[len(self.history) // 2]
                             self.last_update = time.monotonic()
                             self.status = f"sensor on {self.port}"
                         elif "Error" in line:
@@ -227,22 +237,26 @@ class Game:
         self.seed_timer = 1.0
         self.storm_timer = 6.0
         self.hill_offset = 0.0
+        self.target = self.bird_y
+        self.countdown = 0.0
+        self.danger_top = False
+        self.danger_bottom = False
 
     @property
     def score(self):
         return int(self.travel / 40) + self.seed_score
 
     def target_y(self):
-        """Screen y the bird should head toward, from the sensor or mouse."""
+        """Screen y the bird should head toward, and whether the reading is out of range."""
         if self.use_mouse:
-            return pygame.mouse.get_pos()[1]
+            return pygame.mouse.get_pos()[1], False
         if self.sensor is None or self.sensor.distance is None:
-            return self.bird_y
+            return self.bird_y, False
+        d = self.sensor.distance
         span = max(1, self.high - self.low)
-        t = (self.sensor.distance - self.low) / span
-        t = max(0.0, min(1.0, t))
+        t = max(0.0, min(1.0, (d - self.low) / span))
         margin = 30
-        return H - margin - t * (H - 2 * margin)
+        return H - margin - t * (H - 2 * margin), not self.low <= d <= self.high
 
     def handle_key(self, key):
         if key == pygame.K_ESCAPE:
@@ -256,14 +270,38 @@ class Game:
                 self.high = self.sensor.distance
         if key == pygame.K_SPACE and self.state in ("title", "over"):
             self.reset()
-            self.state = "play"
+            self.state = "countdown"
+            self.countdown = COUNTDOWN
         return True
 
+    def update_danger(self):
+        """Would the bird hit a wall if it reached the current target over the next stretch?"""
+        ahead = [self.canyon.walls_at(x) for x in range(BIRD_X, BIRD_X + WARN_LOOKAHEAD, STEP)]
+        self.danger_top = self.target - BIRD_R + 3 < max(a[0] for a in ahead)
+        self.danger_bottom = self.target + BIRD_R - 3 > min(a[1] for a in ahead)
+
     def update(self, dt):
-        target = self.target_y()
-        new_y = self.bird_y + (target - self.bird_y) * min(1.0, dt * 12)
+        raw_target, out_of_range = self.target_y()
+        # ignore the sensor's ~1 cm wobble, then smooth what's left before the bird follows it
+        deadband = 0 if self.use_mouse else DEADBAND_CM * (H - 60) / max(1, self.high - self.low)
+        if abs(raw_target - self.target) > deadband:
+            self.target += (raw_target - self.target) * min(1.0, dt / TARGET_SMOOTHING)
+        if out_of_range:
+            # readings past the calibrated range are often stray echoes, so drift there slowly
+            step = max(-DRIFT_SPEED * dt, min(DRIFT_SPEED * dt, self.target - self.bird_y))
+            new_y = self.bird_y + step
+        else:
+            new_y = self.bird_y + (self.target - self.bird_y) * min(1.0, dt * 10)
         self.bird_vy = (new_y - self.bird_y) / max(dt, 1e-6)
         self.bird_y = new_y
+
+        if self.state == "countdown":
+            # canyon holds still so the player can line up with the gap
+            self.update_danger()
+            self.countdown -= dt
+            if self.countdown <= 0:
+                self.state = "play"
+            return
 
         if self.state != "play":
             self.hill_offset += 30 * dt
@@ -312,6 +350,8 @@ class Game:
             p[4] -= dt
         self.particles = [p for p in self.particles if p[4] > 0]
 
+        self.update_danger()
+
         top, bottom = self.canyon.walls_at(BIRD_X)
         hit_wall = self.bird_y - BIRD_R + 3 < top or self.bird_y + BIRD_R - 3 > bottom
         hit_storm = any(
@@ -328,6 +368,22 @@ class Game:
         rect = img.get_rect(center=pos) if center else img.get_rect(topleft=pos)
         self.screen.blit(img, rect)
 
+    def draw_warnings(self, t):
+        """Ghost marker at the sensor's target, plus a red border on the side you'd crash into."""
+        danger = self.danger_top or self.danger_bottom
+        ghost = WARN if danger else TEXT
+        pygame.draw.circle(self.screen, ghost, (BIRD_X, int(self.target)), BIRD_R + 4, 2)
+
+        pulse = 0.5 + 0.5 * math.sin(t * 12)
+        overlay = pygame.Surface((W, WARN_BORDER), pygame.SRCALPHA)
+        overlay.fill((*WARN, int(110 + 110 * pulse)))
+        if self.danger_top:
+            self.screen.blit(overlay, (0, 0))
+            self.text("TOO HIGH", (W // 2, WARN_BORDER + 16), center=True)
+        if self.danger_bottom:
+            self.screen.blit(overlay, (0, H - WARN_BORDER))
+            self.text("TOO LOW", (W // 2, H - WARN_BORDER - 16), center=True)
+
     def draw(self, t):
         self.screen.blit(self.sky, (0, 0))
         draw_hills(self.screen, self.hill_offset)
@@ -342,6 +398,9 @@ class Game:
             for p in self.particles:
                 pygame.draw.circle(self.screen, SEED, (int(p[0]), int(p[1])), 3)
 
+        if self.state in ("play", "countdown"):
+            self.draw_warnings(t)
+
         tilt = max(-35, min(35, -self.bird_vy * 0.05))
         draw_bird(self.screen, self.bird_y, tilt, t, dead=self.state == "over")
 
@@ -351,6 +410,9 @@ class Game:
             self.text("Grab seeds, dodge storm clouds, don't touch the canyon walls.", (W // 2, 230), center=True)
             self.text("Calibrate: hold hand low + press L, hold hand high + press H", (W // 2, 290), center=True)
             self.text("SPACE start    M toggle mouse    ESC quit", (W // 2, 330), center=True)
+        elif self.state == "countdown":
+            self.text(str(math.ceil(self.countdown)), (W // 2, H // 2 - 40), self.big, center=True)
+            self.text("Get ready - line the bird up with the gap", (W // 2, H // 2 + 20), center=True)
         elif self.state == "play":
             self.text(f"Score {self.score}", (16, 12))
             self.text(f"Best {self.best}", (16, 40))
