@@ -1,4 +1,4 @@
-"""Updraft - steer a bird through a winding canyon with a TF-Luna lidar.
+"""Updraft - steer a bird through a winding canyon with an ultrasonic distance sensor.
 
 Hold your hand above the sensor: raise it to fly higher, lower it to dive.
 Reads the "Distance (cm): N" lines printed by the Arduino sketch.
@@ -40,7 +40,7 @@ STORM = (52, 56, 74)
 TEXT = (245, 240, 230)
 
 
-class LidarReader(threading.Thread):
+class SensorReader(threading.Thread):
     """Reads distance lines from the Arduino in the background."""
 
     def __init__(self, port, baud=115200):
@@ -63,7 +63,7 @@ class LidarReader(threading.Thread):
                         if match:
                             self.distance = int(match.group(1))
                             self.last_update = time.monotonic()
-                            self.status = f"lidar on {self.port}"
+                            self.status = f"sensor on {self.port}"
                         elif "Error" in line:
                             self.status = "sensor read error - check wiring"
             except (serial.SerialException, OSError) as exc:
@@ -202,15 +202,15 @@ class Game:
         self.best = load_best()
 
         port = args.port or find_arduino_port()
-        self.lidar = None
+        self.sensor = None
         if serial is None:
-            self.no_lidar_reason = "pyserial not installed (pip install pyserial)"
+            self.no_sensor_reason = "pyserial not installed (pip install pyserial)"
         elif port is None:
-            self.no_lidar_reason = "no Arduino found - pass --port COMx"
+            self.no_sensor_reason = "no Arduino found - pass --port COMx"
         else:
-            self.lidar = LidarReader(port)
-            self.lidar.start()
-        self.use_mouse = self.lidar is None
+            self.sensor = SensorReader(port)
+            self.sensor.start()
+        self.use_mouse = self.sensor is None
         self.state = "title"
         self.reset()
 
@@ -233,13 +233,13 @@ class Game:
         return int(self.travel / 40) + self.seed_score
 
     def target_y(self):
-        """Screen y the bird should head toward, from lidar or mouse."""
+        """Screen y the bird should head toward, from the sensor or mouse."""
         if self.use_mouse:
             return pygame.mouse.get_pos()[1]
-        if self.lidar is None or self.lidar.distance is None:
+        if self.sensor is None or self.sensor.distance is None:
             return self.bird_y
         span = max(1, self.high - self.low)
-        t = (self.lidar.distance - self.low) / span
+        t = (self.sensor.distance - self.low) / span
         t = max(0.0, min(1.0, t))
         margin = 30
         return H - margin - t * (H - 2 * margin)
@@ -247,13 +247,13 @@ class Game:
     def handle_key(self, key):
         if key == pygame.K_ESCAPE:
             return False
-        if key == pygame.K_m and self.lidar is not None:
+        if key == pygame.K_m and self.sensor is not None:
             self.use_mouse = not self.use_mouse
-        if self.lidar is not None and self.lidar.distance is not None:
+        if self.sensor is not None and self.sensor.distance is not None:
             if key == pygame.K_l:
-                self.low = self.lidar.distance
+                self.low = self.sensor.distance
             elif key == pygame.K_h:
-                self.high = self.lidar.distance
+                self.high = self.sensor.distance
         if key == pygame.K_SPACE and self.state in ("title", "over"):
             self.reset()
             self.state = "play"
@@ -360,12 +360,12 @@ class Game:
             self.text("SPACE to fly again", (W // 2, 290), center=True)
 
         if self.use_mouse:
-            status = "mouse control" + ("" if self.lidar else f" ({self.no_lidar_reason})")
+            status = "mouse control" + ("" if self.sensor else f" ({self.no_sensor_reason})")
         else:
-            d = self.lidar.distance
-            stale = time.monotonic() - self.lidar.last_update > 0.5
+            d = self.sensor.distance
+            stale = time.monotonic() - self.sensor.last_update > 0.5
             reading = "--" if d is None else f"{d} cm"
-            status = f"{self.lidar.status}  |  {reading}{' (stale)' if stale else ''}  |  range {self.low}-{self.high} cm"
+            status = f"{self.sensor.status}  |  {reading}{' (stale)' if stale else ''}  |  range {self.low}-{self.high} cm"
         self.text(status, (16, H - 32))
 
     def run(self):
@@ -381,16 +381,16 @@ class Game:
             self.update(dt)
             self.draw(time.monotonic() - start)
             pygame.display.flip()
-        if self.lidar:
-            self.lidar.stop_event.set()
+        if self.sensor:
+            self.sensor.stop_event.set()
         pygame.quit()
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Lidar-controlled canyon flyer")
+    parser = argparse.ArgumentParser(description="Distance-sensor-controlled canyon flyer")
     parser.add_argument("--port", help="serial port, e.g. COM3 (auto-detected if omitted)")
-    parser.add_argument("--low", type=int, default=20, help="distance in cm for the bottom of the screen")
-    parser.add_argument("--high", type=int, default=100, help="distance in cm for the top of the screen")
+    parser.add_argument("--low", type=int, default=5, help="distance in cm for the bottom of the screen")
+    parser.add_argument("--high", type=int, default=60, help="distance in cm for the top of the screen")
     Game(parser.parse_args()).run()
 
 

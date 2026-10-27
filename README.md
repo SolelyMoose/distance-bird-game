@@ -1,10 +1,10 @@
 # Distance Bird Game
 
-**Updraft**: steer a bird through a winding canyon by moving your hand over a TF-Luna lidar sensor.
+**Updraft**: steer a bird through a winding canyon by moving your hand over an ultrasonic distance sensor.
 
 ## Hardware
 - Arduino Uno
-- TF-Luna lidar in I2C mode (SDA → A4, SCL → A5, 5V, GND)
+- HC-SR04 ultrasonic sensor (Trig → pin 7, Echo → pin 8, VCC → 5V, GND → GND)
 
 ## Setup
 1. Open this folder in VS Code with PlatformIO and upload the sketch (`src/main.cpp`) to the Uno.
@@ -22,4 +22,4 @@
 - **M**: toggle mouse control
 - **ESC**: quit
 
-Options: `--port COM3`, `--low 20`, `--high 100` (distances in cm).
+Options: `--port COM3`, `--low 5`, `--high 60` (distances in cm).
