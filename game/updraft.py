@@ -1,9 +1,10 @@
-"""Updraft - steer a bird through a winding canyon with an ultrasonic distance sensor.
+"""Updraft - steer a bird through a winding canyon with a TF-Luna lidar + ultrasonic sensor.
 
-Hold your hand above the sensor: raise it to fly higher, lower it to dive.
-Reads the "Distance (cm): N" lines printed by the Arduino sketch.
+Hold your hand above the sensors: raise it to fly higher, lower it to dive.
+Reads the "Luna (cm): N  Sonar (cm): N" lines printed by the Arduino sketch
+and combines them into one hand distance.
 
-Usage:  python updraft.py [--port COM3] [--low 20] [--high 100]
+Usage:  python updraft.py [--port COM3] [--low 5] [--high 60]
 """
 import argparse
 import math
@@ -34,9 +35,13 @@ MEDIAN_WINDOW = 5  # sensor readings combined to reject stray echoes
 TARGET_SMOOTHING = 0.12  # seconds; higher = smoother but laggier bird
 DEADBAND_CM = 1.1  # hand movements smaller than this are treated as sensor noise
 COUNTDOWN = 5  # seconds before the canyon starts moving
+LUNA_MIN_CM = 20  # TF-Luna readings closer than this are ignored
+AGREE_CM = 8  # sensors within this many cm are averaged together
+LUNA_WEIGHT = 0.7  # share of the TF-Luna in that average (it's the more precise one)
 BEST_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "best.txt")
 
 LINE_RE = re.compile(r"Distance \(cm\):\s*(-?\d+)")
+DUAL_RE = re.compile(r"Luna \(cm\):\s*(-?\d+)\s+Sonar \(cm\):\s*(-?\d+)")
 
 SKY_TOP = (24, 32, 72)
 SKY_BOTTOM = (236, 140, 96)
@@ -48,18 +53,55 @@ TEXT = (245, 240, 230)
 WARN = (235, 60, 60)
 
 
+def recent_median(history):
+    """Median of the valid readings in history, or None if too many recent reads failed."""
+    valid = sorted(v for v in history if v is not None)
+    if len(valid) * 2 <= len(history):
+        return None
+    return valid[len(valid) // 2]
+
+
+def fuse(luna, sonar):
+    """Combine the two sensors into one hand distance (cm), or None if neither sees it."""
+    if luna is not None and luna < LUNA_MIN_CM:
+        luna = None  # the TF-Luna is unreliable this close
+    if luna is None or sonar is None:
+        return sonar if luna is None else luna
+    if abs(luna - sonar) <= AGREE_CM:
+        return round(LUNA_WEIGHT * luna + (1 - LUNA_WEIGHT) * sonar)
+    # disagreeing usually means the lidar's narrow beam missed the hand and hit something
+    # behind it, so trust the nearer reading
+    return min(luna, sonar)
+
+
 class SensorReader(threading.Thread):
-    """Reads distance lines from the Arduino in the background."""
+    """Reads both sensors' distance lines from the Arduino in the background."""
 
     def __init__(self, port, baud=115200):
         super().__init__(daemon=True)
         self.port = port
         self.baud = baud
-        self.distance = None  # median of recent readings, so single bad echoes are ignored
-        self.history = deque(maxlen=MEDIAN_WINDOW)
+        self.distance = None  # fused hand distance
+        self.luna = None  # per-sensor medians, so single bad readings are ignored
+        self.sonar = None
+        self.luna_history = deque(maxlen=MEDIAN_WINDOW)
+        self.sonar_history = deque(maxlen=MEDIAN_WINDOW)
         self.last_update = 0.0
         self.status = "connecting..."
         self.stop_event = threading.Event()
+
+    def add_readings(self, luna, sonar):
+        self.luna_history.append(luna if luna is not None and luna >= 0 else None)
+        self.sonar_history.append(sonar if sonar is not None and sonar >= 0 else None)
+        self.luna = recent_median(self.luna_history)
+        self.sonar = recent_median(self.sonar_history)
+        fused = fuse(self.luna, self.sonar)
+        if fused is not None:
+            self.distance = fused
+            self.last_update = time.monotonic()
+            self.status = f"sensors on {self.port}"
+        else:
+            self.status = "no sensor sees your hand - check wiring"
 
     def run(self):
         while not self.stop_event.is_set():
@@ -68,12 +110,13 @@ class SensorReader(threading.Thread):
                     self.status = f"waiting for data on {self.port}"
                     while not self.stop_event.is_set():
                         line = ser.readline().decode(errors="ignore")
-                        match = LINE_RE.search(line)
-                        if match:
-                            self.history.append(int(match.group(1)))
-                            self.distance = sorted(self.history)[len(self.history) // 2]
-                            self.last_update = time.monotonic()
-                            self.status = f"sensor on {self.port}"
+                        dual = DUAL_RE.search(line)
+                        single = LINE_RE.search(line)
+                        if dual:
+                            self.add_readings(int(dual.group(1)), int(dual.group(2)))
+                        elif single:
+                            # older single-sensor sketch
+                            self.add_readings(None, int(single.group(1)))
                         elif "Error" in line:
                             self.status = "sensor read error - check wiring"
             except (serial.SerialException, OSError) as exc:
@@ -427,6 +470,8 @@ class Game:
             d = self.sensor.distance
             stale = time.monotonic() - self.sensor.last_update > 0.5
             reading = "--" if d is None else f"{d} cm"
+            luna, sonar = self.sensor.luna, self.sensor.sonar
+            reading += f" (luna {'--' if luna is None else luna}, sonar {'--' if sonar is None else sonar})"
             status = f"{self.sensor.status}  |  {reading}{' (stale)' if stale else ''}  |  range {self.low}-{self.high} cm"
         self.text(status, (16, H - 32))
 
