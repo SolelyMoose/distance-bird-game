@@ -36,8 +36,7 @@ TARGET_SMOOTHING = 0.12  # seconds; higher = smoother but laggier bird
 DEADBAND_CM = 1.1  # hand movements smaller than this are treated as sensor noise
 COUNTDOWN = 5  # seconds before the canyon starts moving
 LUNA_MIN_CM = 20  # TF-Luna readings closer than this are ignored
-AGREE_CM = 8  # sensors within this many cm are averaged together
-LUNA_WEIGHT = 0.7  # share of the TF-Luna in that average (it's the more precise one)
+MISS_CM = 25  # TF-Luna reading this much past the sonar = its beam missed the hand
 BEST_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "best.txt")
 
 LINE_RE = re.compile(r"Distance \(cm\):\s*(-?\d+)")
@@ -67,11 +66,12 @@ def fuse(luna, sonar):
         luna = None  # the TF-Luna is unreliable this close
     if luna is None or sonar is None:
         return sonar if luna is None else luna
-    if abs(luna - sonar) <= AGREE_CM:
-        return round(LUNA_WEIGHT * luna + (1 - LUNA_WEIGHT) * sonar)
-    # disagreeing usually means the lidar's narrow beam missed the hand and hit something
-    # behind it, so trust the nearer reading
-    return min(luna, sonar)
+    # the lidar is far steadier, so it leads; the sonar's wide beam jumps between echoes off
+    # fingers, palm and arm. Only a lidar reading well past the sonar means its narrow beam
+    # missed the hand and hit something behind it.
+    if luna - sonar > MISS_CM:
+        return sonar
+    return luna
 
 
 class SensorReader(threading.Thread):

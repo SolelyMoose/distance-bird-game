@@ -49,6 +49,8 @@ void setup() {
   // put your setup code here, to run once:
   Serial.begin(115200);
   Wire.begin();
+  // don't let a stuck I2C bus freeze the sketch; reset the bus and carry on instead
+  Wire.setWireTimeout(3000, true);
   pinMode(trigPin, OUTPUT);
   pinMode(echoPin, INPUT);
   digitalWrite(trigPin, LOW);

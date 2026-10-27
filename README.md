@@ -1,6 +1,6 @@
 # Distance Bird Game
 
-**Updraft**: steer a bird through a winding canyon by moving your hand over a TF-Luna lidar and an ultrasonic sensor. The game combines both readings: the ultrasonic's wide beam catches your hand, and the TF-Luna adds precision.
+**Updraft**: steer a bird through a winding canyon by moving your hand over a TF-Luna lidar and an ultrasonic sensor. The game follows the steadier TF-Luna and falls back to the ultrasonic's wide beam when the lidar misses your hand.
 
 ## Hardware
 - Arduino Uno
