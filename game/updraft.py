@@ -4,7 +4,7 @@ Hold your hand above the sensors: raise it to fly higher, lower it to dive.
 Reads the "Luna (cm): N  Sonar (cm): N" lines printed by the Arduino sketch
 and combines them into one hand distance.
 
-Usage:  python updraft.py [--port COM3] [--low 5] [--high 60]
+Usage:  python updraft.py [--port COM3] [--sensors both|luna|sonar] [--low 5] [--high 60]
 """
 import argparse
 import math
@@ -77,9 +77,10 @@ def fuse(luna, sonar):
 class SensorReader(threading.Thread):
     """Reads both sensors' distance lines from the Arduino in the background."""
 
-    def __init__(self, port, baud=115200):
+    def __init__(self, port, sensors="both", baud=115200):
         super().__init__(daemon=True)
         self.port = port
+        self.sensors = sensors  # "both", "luna" or "sonar"
         self.baud = baud
         self.distance = None  # fused hand distance
         self.luna = None  # per-sensor medians, so single bad readings are ignored
@@ -91,6 +92,10 @@ class SensorReader(threading.Thread):
         self.stop_event = threading.Event()
 
     def add_readings(self, luna, sonar):
+        if self.sensors == "sonar":
+            luna = None
+        elif self.sensors == "luna":
+            sonar = None
         self.luna_history.append(luna if luna is not None and luna >= 0 else None)
         self.sonar_history.append(sonar if sonar is not None and sonar >= 0 else None)
         self.luna = recent_median(self.luna_history)
@@ -261,7 +266,7 @@ class Game:
         elif port is None:
             self.no_sensor_reason = "no Arduino found - pass --port COMx"
         else:
-            self.sensor = SensorReader(port)
+            self.sensor = SensorReader(port, args.sensors)
             self.sensor.start()
         self.use_mouse = self.sensor is None
         self.state = "title"
@@ -471,7 +476,9 @@ class Game:
             stale = time.monotonic() - self.sensor.last_update > 0.5
             reading = "--" if d is None else f"{d} cm"
             luna, sonar = self.sensor.luna, self.sensor.sonar
-            reading += f" (luna {'--' if luna is None else luna}, sonar {'--' if sonar is None else sonar})"
+            luna = "off" if self.sensor.sensors == "sonar" else "--" if luna is None else luna
+            sonar = "off" if self.sensor.sensors == "luna" else "--" if sonar is None else sonar
+            reading += f" (luna {luna}, sonar {sonar})"
             status = f"{self.sensor.status}  |  {reading}{' (stale)' if stale else ''}  |  range {self.low}-{self.high} cm"
         self.text(status, (16, H - 32))
 
@@ -496,9 +503,14 @@ class Game:
 def main():
     parser = argparse.ArgumentParser(description="Distance-sensor-controlled canyon flyer")
     parser.add_argument("--port", help="serial port, e.g. COM3 (auto-detected if omitted)")
-    parser.add_argument("--low", type=int, default=5, help="distance in cm for the bottom of the screen")
+    parser.add_argument("--sensors", choices=("both", "luna", "sonar"), default="both", help="which sensors to use")
+    parser.add_argument("--low", type=int, help="distance in cm for the bottom of the screen")
     parser.add_argument("--high", type=int, default=60, help="distance in cm for the top of the screen")
-    Game(parser.parse_args()).run()
+    args = parser.parse_args()
+    if args.low is None:
+        # the TF-Luna can't see closer than LUNA_MIN_CM, so start the range there when it's alone
+        args.low = LUNA_MIN_CM if args.sensors == "luna" else 5
+    Game(args).run()
 
 
 if __name__ == "__main__":
