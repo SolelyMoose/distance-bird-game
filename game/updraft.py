@@ -4,7 +4,7 @@ Hold your hand above the sensors: raise it to fly higher, lower it to dive.
 Reads the "Luna (cm): N  Sonar (cm): N" lines printed by the Arduino sketch
 and combines them into one hand distance.
 
-Usage:  python updraft.py [--port COM3] [--sensors both|luna|sonar] [--low 5] [--high 60]
+Usage:  python updraft.py [--port COM3] [--sensors both|luna|sonar] [--low 50] [--high 100]
 """
 import argparse
 import math
@@ -504,13 +504,9 @@ def main():
     parser = argparse.ArgumentParser(description="Distance-sensor-controlled canyon flyer")
     parser.add_argument("--port", help="serial port, e.g. COM3 (auto-detected if omitted)")
     parser.add_argument("--sensors", choices=("both", "luna", "sonar"), default="both", help="which sensors to use")
-    parser.add_argument("--low", type=int, help="distance in cm for the bottom of the screen")
-    parser.add_argument("--high", type=int, default=60, help="distance in cm for the top of the screen")
-    args = parser.parse_args()
-    if args.low is None:
-        # the TF-Luna can't see closer than LUNA_MIN_CM, so start the range there when it's alone
-        args.low = LUNA_MIN_CM if args.sensors == "luna" else 5
-    Game(args).run()
+    parser.add_argument("--low", type=int, default=50, help="distance in cm for the bottom of the screen")
+    parser.add_argument("--high", type=int, default=100, help="distance in cm for the top of the screen")
+    Game(parser.parse_args()).run()
 
 
 if __name__ == "__main__":

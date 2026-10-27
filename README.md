@@ -23,4 +23,4 @@
 - **M**: toggle mouse control
 - **ESC**: quit
 
-Options: `--port COM3`, `--low 5`, `--high 60` (distances in cm).
+Options: `--port COM3`, `--low 50`, `--high 100` (distances in cm).
